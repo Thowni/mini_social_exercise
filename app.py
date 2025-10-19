@@ -869,7 +869,7 @@ def loop_color(user_id):
 
 # ----- Functions to be implemented are below
 
-# Task 3.1
+# Task 3.3
 def recommend(user_id, filter_following):
     """
     Args:
@@ -889,52 +889,122 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
-
-    recommended_posts = {} 
-
-    return recommended_posts;
+    recommended_posts = {}
+    
+    return recommended_posts
 
 # Task 3.2
 def user_risk_analysis(user_id):
-    """
-    Args:
-        user_id: The ID of the user on which we perform risk analysis.
 
-    Returns:
-        A float number score showing the risk associated with this user. There are no strict rules or bounds to this score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk. (An upper bound of 5.0 is applied to this score elsewhere in the codebase) 
-        
-        You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-        Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
-    """
+    # Resetting values
+    user_risk_score = 0
+    post_score = 0
+    post_amount = 0
+    average_post_score = 0
+    comment_score = 0
+    comment_amount = 0
+    average_comment_score = 0
+    profile_score = 0
+
+    # Moderating user posts + calculating average score
+    user_posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    spam_posts = collections.Counter()
+    for post in user_posts:
+        _, post_risk_score = moderate_content(post['content'])
+        post_score += post_risk_score
+        post_amount += 1
+        spam_posts[post['content']] += 1
+
+    for post, count in spam_posts.items():
+        if(count > 2):
+            post_score += 2.0 * (count - 2)
     
-    score = 0
+    if(post_amount > 0):
+        average_post_score = post_score / post_amount            
 
-    return score;
+    # Moderating user comments + calculating average score
+    user_comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    spam_comments = collections.Counter()
+    for comment in user_comments:
+        _, comment_risk_score = moderate_content(comment['content'])
+        comment_score += comment_risk_score
+        comment_amount += 1
+        spam_comments[comment['content']] += 1
+    
+    for comment, count in spam_comments.items():
+        if(count > 2):
+            comment_score += 2.0 * (count - 2)
+    
+    if (comment_amount > 0):
+        average_comment_score = comment_score / comment_amount
+
+    # Moderating user profile bio + calculating score
+    user_profile = query_db('SELECT profile FROM users WHERE id = ?', (user_id,))
+    profile = user_profile[0][0]
+    if(profile is not None):
+        _, profile_risk_score = moderate_content(profile)
+        profile_score = profile_risk_score
+
+    # Content risk score formula
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+
+    # Calculating account age in days
+    account_created = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,))
+    account_age = (datetime.utcnow() - account_created[0][0]).days
+
+    # Multipliers for account ages
+    if(account_age < 7):
+        user_risk_score = content_risk_score * 1.5
+    elif(account_age < 30):
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+
+    return user_risk_score;
 
     
-# Task 3.3
+# Task 3.1
 def moderate_content(content):
-    """
-    Args
-        content: the text content of a post or comment to be moderated.
-        
-    Returns: 
-        A tuple containing the moderated content (string) and a severity score (float). There are no strict rules or bounds to the severity score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk.
-    
-    This function moderates a string of content and calculates a severity score based on
-    rules loaded from the 'censorship.dat' file. These are already loaded as TIER1_WORDS, TIER2_PHRASES and TIER3_WORDS. Tier 1 corresponds to strong profanity, Tier 2 to scam/spam phrases and Tier 3 to mild profanity.
-    
-    You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-    Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
-    """
 
-    moderated_content = content
+    original_content = content
     score = 0
     
+    # Patterns for censoring
+    TIER1_PATTERN = r'\b(' + '|'.join(TIER1_WORDS) + r')\b'
+    TIER2_PATTERN = r'\b(' + '|'.join(TIER2_PHRASES) + r')\b'
+    TIER3_PATTERN = r'\b(' + '|'.join(TIER3_WORDS) + r')\b'
+
+    # Regex for finding URL:s (found on https://stackoverflow.com/questions/6038061/regular-expression-to-find-urls-within-a-string)
+    URL_PATTERN = r'(?:(?:(https?|ftp|file):\/\/|www\.|ftp\.)|([\w\-_]+(?:\.|\s*\[dot\]\s*[A-Z\-_]+)+))([A-Z\-\.,@?^=%&amp;:\/~\+#]*[A-Z\-\@?^=%&amp;\/~\+#]){2,6}?'
+    # Email check regex from https://regexr.com/3e48o
+    EMAIL_PATTERN = r'[\w.-]+@([\w-]+\.)+[\w-]{2,4}$'
+
+    # Matches for each pattern
+    tier1_matches = re.findall(TIER1_PATTERN, original_content, flags=re.IGNORECASE)
+    tier2_matches = re.findall(TIER2_PATTERN, original_content, flags=re.IGNORECASE)
+    tier3_matches = re.findall(TIER3_PATTERN, original_content, flags=re.IGNORECASE)
+    url_matches = re.findall(URL_PATTERN, original_content, flags=re.IGNORECASE)
+    
+    # Modifying content according to matches
+    if(len(tier1_matches) >= 1):
+        moderated_content = "[content removed due to severe violation]"
+        score = 5.0
+    elif(len(tier2_matches) >= 1):
+        moderated_content = "[content removed due to spam/scam policy]"
+        score = 5.0
+    else:
+        score = len(tier3_matches) * 2 + len(url_matches) * 2
+        censored_content = re.sub(TIER3_PATTERN, lambda m: '*' * len(m.group(0)), original_content, flags=re.IGNORECASE)
+        no_email_content = re.sub(EMAIL_PATTERN, "[email removed]", censored_content, flags=re.IGNORECASE)
+        moderated_content = re.sub(URL_PATTERN, "[link removed]", no_email_content, flags=re.IGNORECASE)
+    
+    # Checking for excessive capitalization
+    content_alpha = re.findall(r'[A-Za-z]', original_content)
+    content_uppercase = re.findall(r'[A-Z]', original_content)
+    
+    if(len(content_alpha) > 15 and len(content_uppercase) / len(content_alpha) > 0.7):
+        score += 0.5
+
     return moderated_content, score
 
 
