@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+import nltk
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -8,6 +9,12 @@ import hashlib
 import re
 from datetime import datetime
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from gensim.corpora import Dictionary
+from gensim.models.ldamodel import LdaModel
+from gensim.models.coherencemodel import CoherenceModel
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -1037,7 +1044,53 @@ def moderate_content(content):
 
     return moderated_content, score
 
+def topics():
+    posts = query_db('SELECT content FROM posts')
+    nltk_stop_words = stopwords.words('english')
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
+    nltk.download('stopwords')
+    nltk.download('wordnet')
+    nltk_stop_words.extend(['would', 'day', 'finished', 'another', 'finally', 'get', 'find', 'latest', 'real', 'see', 'entered', 'damn', 'got', 'spent', 'never', 'link', 'every', 'let', 'keep', 'one', 'feel', 'sometimes', 'change', 'today', 'else', 'like', 'feeling', 'people', 'best', 'always', 'amazing', 'bought', 'quick' 'people', 'new', 'fun', 'think', 'know', 'believe', 'many', 'thing', 'need', 'small', 'even', 'make', 'love', 'mean', 'fact', 'question', 'time', 'reason', 'also', 'could', 'true', 'well',  'life', 'said', 'year', 'going', 'good', 'really', 'much', 'want', 'back', 'look', 'article', 'host', 'university', 'reply', 'thanks', 'mail', 'post', 'please'])
+
+    lemmatizer = WordNetLemmatizer()
+    bow_list = []
+
+    for row in posts:
+        text = row[0]
+        tokens = word_tokenize(text.lower())
+        tokens = [lemmatizer.lemmatize(t) for t in tokens]
+        tokens = [t for t in tokens if len(t) > 2]
+        tokens = [t for t in tokens if t.isalpha() and t not in nltk_stop_words]
+        if len(tokens) > 0:
+            bow_list.append(tokens)
+
+    dict = Dictionary(bow_list)
+    dict.filter_extremes(no_below=2, no_above=0.3)
+    corpus = [dict.doc2bow(tokens) for tokens in bow_list]
+        
+    lda = LdaModel(corpus, num_topics=10, id2word=dict, passes=10, random_state=2)
+
+    coherence_model = CoherenceModel(model=lda, texts=bow_list, dictionary=dict, coherence='c_v')
+    coherence_score = coherence_model.get_coherence()
+    print(f"Trained LDA with {coherence_score} coherence")
+
+    print('Top words for each topic:')
+    for i, topic in lda.print_topics(num_words=5):
+        print(f"Topic {i}: {topic}")
+
+    topic_counts = [0] * 10
+    for bow in corpus:
+        topic_dist = lda.get_document_topics(bow)
+        dominant_topic = max(topic_dist, key=lambda x: x[1])[0]
+        topic_counts[dominant_topic] += 1
+
+    for i, count in enumerate(topic_counts):
+        print(f"Topic {i}: {count} posts")
+
+
 
 if __name__ == '__main__':
+    with app.app_context():
+        topics()
     app.run(debug=True, port=8080)
-
